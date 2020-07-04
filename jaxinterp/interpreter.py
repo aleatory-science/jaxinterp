@@ -1,11 +1,13 @@
 # Code is based on https://jax.readthedocs.io/en/latest/notebooks/Writing_custom_interpreters_in_Jax.html
 
-import numpy as onp
+import numpy as np
 from functools import wraps
 
 from jax import api_util
 from jax import core
 from jax import lax
+from jax import xla
+from jax import pxla
 from jax import linear_util as lu
 from jax import tree_util
 from jax.abstract_arrays import ShapedArray
@@ -16,7 +18,7 @@ def _make_jaxpr_with_consts(fun):
   def pv_like(x):
     # ShapedArrays are abstract values that carry around
     # shape and dtype information
-    aval = ShapedArray(onp.shape(x), onp.result_type(x))
+    aval = ShapedArray(np.shape(x), np.result_type(x))
     return pe.PartialVal.unknown(aval)
 
   @wraps(fun)
@@ -57,8 +59,11 @@ def _interpret_jaxpr(jaxpr, consts, *args):
   for eqn in jaxpr.eqns:
     # Read inputs to equation from environment
     invals = safe_map(read, eqn.invars)  
-    # `bind` is how a primitive is called
-    outvals = eqn.primitive.bind(*invals, **eqn.params)
+    if eqn.primitive is xla.xla_call_p:
+      _interpret_jaxpr(eqn.params['call_jaxpr'], (), *invals)
+    else:
+      # `bind` is how a primitive is called
+      outvals = eqn.primitive.bind(*invals, **eqn.params)
     # Primitives may return multiple outputs or not
     if not eqn.primitive.multiple_results: 
       outvals = [outvals]
@@ -71,7 +76,7 @@ def interpret(fun):
   @wraps(fun)
   def wrapped(*args, **kwargs):
     jaxpr, consts, (_, out_tree) = _make_jaxpr_with_consts(fun)(*args, **kwargs)
-    args = [tree_util.tree_flatten(arg) for arg in args]
+    args = [leaf for arg in args for leaf in tree_util.tree_leaves(arg)]
     out = _interpret_jaxpr(jaxpr, consts, *args)
     return tree_util.build_tree(out_tree, out)
   return wrapped

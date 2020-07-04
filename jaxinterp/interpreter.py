@@ -1,4 +1,5 @@
-# Code is based on https://jax.readthedocs.io/en/latest/notebooks/Writing_custom_interpreters_in_Jax.html
+# Code is based on https://jax.readthedocs.io/en/latest/notebooks/Writing_custom_interpreters_in_Jax.html and
+# https://jax.readthedocs.io/en/latest/_autosummary/jax.lax.scan.html
 
 import numpy as np
 from functools import wraps
@@ -10,6 +11,7 @@ from jax import xla
 from jax import pxla
 from jax import linear_util as lu
 from jax import tree_util
+import jax.numpy as jnp
 from jax.abstract_arrays import ShapedArray
 from jax.interpreters import partial_eval as pe
 from jax.util import safe_map
@@ -55,6 +57,25 @@ def _interpret_jaxpr(jaxpr, consts, *args):
       vals = _interpret_jaxpr(body, (), *vals)
     return vals
 
+  def go_scan(body, length, xs, init, num_carry, reverse):
+    if xs is None:
+      xs = [None] * length
+    if reverse:
+      xs = reversed(xs)
+    carry = init
+    ys = []
+    for x in xs:
+      res = _interpret_jaxpr(body, (), *carry, x)
+      ys.append(res[-1])
+      carry = res[:-1]
+    if num_carry >= 1:
+      return *carry, jnp.stack(ys)
+    else:
+      return jnp.stack(ys)
+
+  def go_cond(branches, index, *vals):
+    return _interpret_jaxpr(branches[index], (), *vals)
+
   # Bind args and consts to environment
   write(core.unitvar, core.unit)
   safe_map(write, jaxpr.invars, args)
@@ -68,6 +89,10 @@ def _interpret_jaxpr(jaxpr, consts, *args):
       _interpret_jaxpr(eqn.params['call_jaxpr'], (), *invals)
     elif eqn.primitive is lax.while_p:
       outvals = go_while(eqn.params['cond_jaxpr'].jaxpr, eqn.params['body_jaxpr'].jaxpr, *invals)
+    elif eqn.primitive is lax.scan_p:
+      outvals = go_scan(eqn.params['jaxpr'].jaxpr, eqn.params['length'], invals, (), eqn.params['num_carry'], eqn.params['reverse'])
+    elif eqn.primitive is lax.cond_p:
+      outvals = go_cond(safe_map(lambda x: x.jaxpr, eqn.params['branches']), *invals)
     else:
       # `bind` is how a primitive is called
       outvals = eqn.primitive.bind(*invals, **eqn.params)

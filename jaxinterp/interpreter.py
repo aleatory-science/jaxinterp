@@ -50,6 +50,11 @@ def _interpret_jaxpr(jaxpr, consts, *args):
   def write(var, val):
     env[var] = val
 
+  def go_while(cond, body, *vals):
+    while _interpret_jaxpr(cond, (), *vals)[0]:
+      vals = _interpret_jaxpr(body, (), *vals)
+    return vals
+
   # Bind args and consts to environment
   write(core.unitvar, core.unit)
   safe_map(write, jaxpr.invars, args)
@@ -61,6 +66,8 @@ def _interpret_jaxpr(jaxpr, consts, *args):
     invals = safe_map(read, eqn.invars)  
     if eqn.primitive is xla.xla_call_p:
       _interpret_jaxpr(eqn.params['call_jaxpr'], (), *invals)
+    elif eqn.primitive is lax.while_p:
+      outvals = go_while(eqn.params['cond_jaxpr'].jaxpr, eqn.params['body_jaxpr'].jaxpr, *invals)
     else:
       # `bind` is how a primitive is called
       outvals = eqn.primitive.bind(*invals, **eqn.params)
@@ -78,5 +85,7 @@ def interpret(fun):
     jaxpr, consts, (_, out_tree) = _make_jaxpr_with_consts(fun)(*args, **kwargs)
     args = [leaf for arg in args for leaf in tree_util.tree_leaves(arg)]
     out = _interpret_jaxpr(jaxpr, consts, *args)
+    if len(out) == 1:
+      out = out[0]
     return tree_util.build_tree(out_tree, out)
   return wrapped

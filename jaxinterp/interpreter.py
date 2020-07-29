@@ -14,9 +14,9 @@ from jax import tree_util
 import jax.numpy as jnp
 from jax.abstract_arrays import ShapedArray
 from jax.interpreters import partial_eval as pe
-from jax.util import safe_map
+from jax.util import safe_map, split_list
 
-def _make_jaxpr_with_consts(fun):
+def _make_jaxpr_with_consts(fun, stage_out):
   def pv_like(x):
     # ShapedArrays are abstract values that carry around
     # shape and dtype information
@@ -35,7 +35,7 @@ def _make_jaxpr_with_consts(fun):
     # Abstract and partial-val's flat args
     pvals = safe_map(pv_like, jax_args)
     # Trace function into Jaxpr
-    jaxpr, _, consts = pe.trace_to_jaxpr(jaxtree_fun, pvals) 
+    jaxpr, _, consts = pe.trace_to_jaxpr(jaxtree_fun, pvals, stage_out=stage_out)
     return jaxpr, consts, (in_tree, out_tree())
   return jaxpr_const_maker
 
@@ -57,7 +57,8 @@ def _interpret_jaxpr(jaxpr, consts, *args):
       vals = _interpret_jaxpr(body, (), *vals)
     return vals
 
-  def go_scan(body, length, xs, init, num_carry, reverse):
+  def go_scan(body, length, xs, init, consts, reverse):
+    num_carry = len(init)
     if xs is None:
       xs = [None] * length
     if reverse:
@@ -65,7 +66,7 @@ def _interpret_jaxpr(jaxpr, consts, *args):
     carry = init
     ys = []
     for x in xs:
-      res = _interpret_jaxpr(body, (), *carry, x)
+      res = _interpret_jaxpr(body, *consts, *carry, x)
       ys.append(res[-1])
       carry = res[:-1]
     if num_carry >= 1:
@@ -86,11 +87,12 @@ def _interpret_jaxpr(jaxpr, consts, *args):
     # Read inputs to equation from environment
     invals = safe_map(read, eqn.invars)  
     if eqn.primitive is xla.xla_call_p:
-      _interpret_jaxpr(eqn.params['call_jaxpr'], (), *invals)
+      outvals = _interpret_jaxpr(eqn.params['call_jaxpr'], (), *invals)
     elif eqn.primitive is lax.while_p:
       outvals = go_while(eqn.params['cond_jaxpr'].jaxpr, eqn.params['body_jaxpr'].jaxpr, *invals)
     elif eqn.primitive is lax.scan_p:
-      outvals = go_scan(eqn.params['jaxpr'].jaxpr, eqn.params['length'], invals, (), eqn.params['num_carry'], eqn.params['reverse'])
+      consts, carry_init, rest = split_list(invals, [eqn.params['num_consts'], eqn.params['num_carry']])
+      outvals = go_scan(eqn.params['jaxpr'].jaxpr, eqn.params['length'], rest, carry_init, consts, eqn.params['reverse'])
     elif eqn.primitive is lax.cond_p:
       outvals = go_cond(safe_map(lambda x: x.jaxpr, eqn.params['branches']), *invals)
     else:
@@ -104,10 +106,10 @@ def _interpret_jaxpr(jaxpr, consts, *args):
   # Read the final result of the Jaxpr from the environment
   return safe_map(read, jaxpr.outvars) 
 
-def interpret(fun):
+def interpret(fun, stage_out=False):
   @wraps(fun)
   def wrapped(*args, **kwargs):
-    jaxpr, consts, (_, out_tree) = _make_jaxpr_with_consts(fun)(*args, **kwargs)
+    jaxpr, consts, (_, out_tree) = _make_jaxpr_with_consts(fun, stage_out)(*args, **kwargs)
     args = [leaf for arg in args for leaf in tree_util.tree_leaves(arg)]
     out = _interpret_jaxpr(jaxpr, consts, *args)
     if len(out) == 1:

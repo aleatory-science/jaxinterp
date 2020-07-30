@@ -66,7 +66,7 @@ def _interpret_jaxpr(jaxpr, consts, *args):
     carry = init
     ys = []
     for x in xs:
-      res = _interpret_jaxpr(body, *consts, *carry, x)
+      res = _interpret_jaxpr(body, (), *consts, *carry, x)
       ys.append(res[-1])
       carry = res[:-1]
     if num_carry >= 1:
@@ -91,7 +91,7 @@ def _interpret_jaxpr(jaxpr, consts, *args):
     elif eqn.primitive is lax.while_p:
       outvals = go_while(eqn.params['cond_jaxpr'].jaxpr, eqn.params['body_jaxpr'].jaxpr, *invals)
     elif eqn.primitive is lax.scan_p:
-      consts, carry_init, rest = split_list(invals, [eqn.params['num_consts'], eqn.params['num_carry']])
+      consts, carry_init, [rest] = split_list(invals, [eqn.params['num_consts'], eqn.params['num_carry']])
       outvals = go_scan(eqn.params['jaxpr'].jaxpr, eqn.params['length'], rest, carry_init, consts, eqn.params['reverse'])
     elif eqn.primitive is lax.cond_p:
       outvals = go_cond(safe_map(lambda x: x.jaxpr, eqn.params['branches']), *invals)

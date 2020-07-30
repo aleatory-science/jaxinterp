@@ -1,5 +1,6 @@
 # Code is based on https://jax.readthedocs.io/en/latest/notebooks/Writing_custom_interpreters_in_Jax.html and
 # https://jax.readthedocs.io/en/latest/_autosummary/jax.lax.scan.html
+from itertools import repeat
 
 import numpy as np
 from functools import wraps
@@ -39,6 +40,17 @@ def _make_jaxpr_with_consts(fun, stage_out):
     return jaxpr, consts, (in_tree, out_tree())
   return jaxpr_const_maker
 
+def _stack(aval, cvals, reverse=False):
+  cvals = list(reversed(cvals)) if reverse else cvals
+  if aval.aval is core.abstract_unit:
+    return core.unit
+  else:
+    return jnp.stack(cvals, 0)
+
+def _zip(xs):
+  length = max(len(x) if not x is core.unit else 0 for x in xs)
+  return zip(*[x if not x is core.unit else repeat(core.unit, length) for x in xs])
+
 def _interpret_jaxpr(jaxpr, consts, *args):
   # Mapping from variable -> value
   env = {}
@@ -62,17 +74,17 @@ def _interpret_jaxpr(jaxpr, consts, *args):
     if xs is None:
       xs = [None] * length
     if reverse:
-      xs = reversed(xs)
+      xs = list(reversed(xs))
     carry = init
     ys = []
-    for x in xs:
-      res = _interpret_jaxpr(body, (), *consts, *carry, x)
-      ys.append(res[-1])
-      carry = res[:-1]
-    if num_carry >= 1:
-      return *carry, jnp.stack(ys)
-    else:
-      return jnp.stack(ys)
+    zxs = _zip(xs)
+    for x in zxs:
+      res = _interpret_jaxpr(body, (), *consts, *carry, *x)
+      carry, y = split_list(res, [num_carry])
+      ys.append(y)
+    _, yavals = split_list(body.outvars, [num_carry])
+    ys = map(lambda *x: _stack(*x, reverse), yavals, zip(*ys))
+    return *carry, *ys
 
   def go_cond(branches, index, *vals):
     return _interpret_jaxpr(branches[index], (), *vals)
@@ -91,7 +103,7 @@ def _interpret_jaxpr(jaxpr, consts, *args):
     elif eqn.primitive is lax.while_p:
       outvals = go_while(eqn.params['cond_jaxpr'].jaxpr, eqn.params['body_jaxpr'].jaxpr, *invals)
     elif eqn.primitive is lax.scan_p:
-      consts, carry_init, [rest] = split_list(invals, [eqn.params['num_consts'], eqn.params['num_carry']])
+      consts, carry_init, rest = split_list(invals, [eqn.params['num_consts'], eqn.params['num_carry']])
       outvals = go_scan(eqn.params['jaxpr'].jaxpr, eqn.params['length'], rest, carry_init, consts, eqn.params['reverse'])
     elif eqn.primitive is lax.cond_p:
       outvals = go_cond(safe_map(lambda x: x.jaxpr, eqn.params['branches']), *invals)

@@ -74,7 +74,7 @@ def _interpret_jaxpr(jaxpr, consts, *args):
     if xs is None:
       xs = [None] * length
     if reverse:
-      xs = list(reversed(xs))
+      xs = list(map(reversed, xs))
     carry = init
     ys = []
     zxs = _zip(xs)

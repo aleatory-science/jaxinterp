@@ -40,12 +40,20 @@ def _make_jaxpr_with_consts(fun, stage_out):
     return jaxpr, consts, (in_tree, out_tree())
   return jaxpr_const_maker
 
-def _stack(aval, cvals, reverse=False):
-  cvals = list(reversed(cvals)) if reverse else cvals
+def _reverse(cval):
+  if cval is core.unit:
+    return core.unit
+  elif cval is list:
+    return list(reversed(cval))
+  else:
+    return cval[::-1]
+
+def _stack(aval, cval, reverse=False):
+  cval = _reverse(cval)
   if aval.aval is core.abstract_unit:
     return core.unit
   else:
-    return jnp.stack(cvals, 0)
+    return jnp.stack(cval, 0)
 
 def _zip(xs):
   length = max(len(x) if not x is core.unit else 0 for x in xs)
@@ -74,7 +82,7 @@ def _interpret_jaxpr(jaxpr, consts, *args):
     if xs is None:
       xs = [None] * length
     if reverse:
-      xs = list(map(reversed, xs))
+      xs = list(map(_reverse, xs))
     carry = init
     ys = []
     zxs = _zip(xs)

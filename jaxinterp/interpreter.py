@@ -134,5 +134,5 @@ def interpret(fun, stage_out=False):
     out = _interpret_jaxpr(jaxpr, consts, *args)
     if len(out) == 1:
       out = out[0]
-    return tree_util.build_tree(out_tree, out)
+    return tree_util.tree_unflatten(out_tree, out)
   return wrapped
